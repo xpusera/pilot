@@ -54,6 +54,8 @@ public class WebViewEmbed {
     private final CopyOnWriteArrayList<LuaMessage> pendingMessages;
     private FrameLayout containerView;
     private boolean initialized = false;
+    private boolean prewarmed = false;
+    private WebView prewarmWebView;
     
     public static class LuaMessage {
         public final int webViewId;
@@ -137,6 +139,25 @@ public class WebViewEmbed {
     public void initialize(FrameLayout container) {
         this.containerView = container;
         this.initialized = true;
+        
+        if (!prewarmed) {
+            new Thread(() -> {
+                try {
+                    Thread.sleep(500);
+                    mainHandler.post(() -> {
+                        try {
+                            prewarmWebView = new WebView(context);
+                            prewarmWebView.getSettings().setJavaScriptEnabled(true);
+                            prewarmWebView.loadDataWithBaseURL(null, "<html></html>", "text/html", "UTF-8", null);
+                            prewarmed = true;
+                            Log.i(TAG, "WebView prewarmed");
+                        } catch (Exception e) {
+                            Log.e(TAG, "Prewarm failed", e);
+                        }
+                    });
+                } catch (Exception ignored) {}
+            }).start();
+        }
     }
     
     public int createWebView(int x, int y, int width, int height, boolean textureMode) {
@@ -169,7 +190,16 @@ public class WebViewEmbed {
     
     @SuppressLint("SetJavaScriptEnabled")
     private void createWebViewOnUI(WebViewInstance wvi) {
-        WebView webView = new WebView(context);
+        WebView webView;
+        
+        if (prewarmWebView != null) {
+            webView = prewarmWebView;
+            prewarmWebView = null;
+            Log.i(TAG, "Using prewarmed WebView");
+        } else {
+            webView = new WebView(context);
+        }
+        
         wvi.webView = webView;
         
         WebSettings settings = webView.getSettings();
@@ -188,7 +218,7 @@ public class WebViewEmbed {
         }
         
         webView.setBackgroundColor(Color.TRANSPARENT);
-        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
         
         webView.addJavascriptInterface(new JsBridge(wvi.id, this), "LuantiBridge");
         
