@@ -48,7 +48,7 @@ jobs:
           java-version: '17'
     - name: Generate debug keystore
       run: |
-        keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Debug, OU=Debug, O=Debug, L=Debug, S=Debug, C=US"
+        keytool -genkey -v -keystore ${{ github.workspace }}/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Debug, OU=Debug, O=Debug, L=Debug, S=Debug, C=US"
     - name: Build AAB with Gradle
       run: cd android; ./gradlew bundlerelease
     - name: Build APKs with Gradle
@@ -58,7 +58,7 @@ jobs:
         cd android/app/build/outputs/apk/release
         for apk in *-unsigned.apk; do
           signed_name="${apk/-unsigned/}"
-          apksigner sign --ks ../../../../../debug.keystore --ks-pass pass:android --key-pass pass:android --out "$signed_name" "$apk"
+          apksigner sign --ks ${{ github.workspace }}/debug.keystore --ks-pass pass:android --key-pass pass:android --out "$signed_name" "$apk"
         done
     - name: Save AAB artifact
       uses: actions/upload-artifact@v5
