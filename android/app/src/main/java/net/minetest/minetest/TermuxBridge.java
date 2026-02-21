@@ -240,20 +240,22 @@ public class TermuxBridge {
         PendingIntent pendingIntent = PendingIntent.getBroadcast(context, commandId, resultIntent, flags);
         intent.putExtra("com.termux.RUN_COMMAND_PENDING_INTENT", pendingIntent);
         
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent);
-            } else {
-                context.startService(intent);
+        final int finalCommandId = commandId;
+        final Intent finalIntent = intent;
+        final String finalExecutable = executable;
+        
+        new Thread(() -> {
+            try {
+                context.startService(finalIntent);
+                Log.i(TAG, "Started Termux command #" + finalCommandId + ": " + finalExecutable);
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to start Termux command", e);
+                pendingCommands.remove(finalCommandId);
+                completedResults.add(new CommandResult(finalCommandId, "", "", -1, "Failed to start: " + e.getMessage()));
             }
-            Log.i(TAG, "Started Termux command #" + commandId + ": " + executable);
-            return commandId;
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to start Termux command", e);
-            pendingCommands.remove(commandId);
-            completedResults.add(new CommandResult(commandId, "", "", -1, "Failed to start: " + e.getMessage()));
-            return commandId;
-        }
+        }).start();
+        
+        return commandId;
     }
     
     public int executeShellCommand(String command, boolean background) {

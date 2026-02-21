@@ -148,13 +148,22 @@ public class WebViewEmbed {
         wvi.height = height;
         wvi.isTextureMode = textureMode;
         
+        webViews.put(id, wvi);
+        
         if (textureMode) {
             wvi.textureBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
             wvi.textureBuffer = ByteBuffer.allocateDirect(width * height * 4);
         }
         
-        mainHandler.post(() -> createWebViewOnUI(wvi));
-        webViews.put(id, wvi);
+        mainHandler.post(() -> {
+            try {
+                createWebViewOnUI(wvi);
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to create WebView", e);
+                queueMessage(id, "error", "Failed to create: " + e.getMessage());
+            }
+        });
+        
         return id;
     }
     
@@ -230,10 +239,20 @@ public class WebViewEmbed {
         WebViewInstance wvi = webViews.get(id);
         if (wvi == null) return;
         
+        final String wrappedHtml = wrapHtmlWithBridge(html);
         mainHandler.post(() -> {
-            if (wvi.webView != null) {
-                String wrappedHtml = wrapHtmlWithBridge(html);
-                wvi.webView.loadDataWithBaseURL("file:///android_asset/", wrappedHtml, "text/html", "UTF-8", null);
+            try {
+                if (wvi.webView != null) {
+                    wvi.webView.loadDataWithBaseURL("file:///android_asset/", wrappedHtml, "text/html", "UTF-8", null);
+                } else {
+                    mainHandler.postDelayed(() -> {
+                        if (wvi.webView != null) {
+                            wvi.webView.loadDataWithBaseURL("file:///android_asset/", wrappedHtml, "text/html", "UTF-8", null);
+                        }
+                    }, 100);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to load HTML", e);
             }
         });
     }
@@ -242,29 +261,32 @@ public class WebViewEmbed {
         WebViewInstance wvi = webViews.get(id);
         if (wvi == null) return;
         
-        try {
-            File file = new File(filePath);
-            StringBuilder content = new StringBuilder();
-            BufferedReader reader = new BufferedReader(new FileReader(file));
-            String line;
-            while ((line = reader.readLine()) != null) {
-                content.append(line).append("\n");
-            }
-            reader.close();
-            
-            String baseUrl = "file://" + file.getParent() + "/";
-            String html = content.toString();
-            
-            mainHandler.post(() -> {
-                if (wvi.webView != null) {
-                    String wrappedHtml = wrapHtmlWithBridge(html);
-                    wvi.webView.loadDataWithBaseURL(baseUrl, wrappedHtml, "text/html", "UTF-8", null);
+        final int webViewId = id;
+        new Thread(() -> {
+            try {
+                File file = new File(filePath);
+                StringBuilder content = new StringBuilder();
+                BufferedReader reader = new BufferedReader(new FileReader(file));
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    content.append(line).append("\n");
                 }
-            });
-        } catch (IOException e) {
-            Log.e(TAG, "Failed to load file: " + filePath, e);
-            queueMessage(id, "error", "Failed to load file: " + e.getMessage());
-        }
+                reader.close();
+                
+                String baseUrl = "file://" + file.getParent() + "/";
+                String html = content.toString();
+                String wrappedHtml = wrapHtmlWithBridge(html);
+                
+                mainHandler.post(() -> {
+                    if (wvi.webView != null) {
+                        wvi.webView.loadDataWithBaseURL(baseUrl, wrappedHtml, "text/html", "UTF-8", null);
+                    }
+                });
+            } catch (IOException e) {
+                Log.e(TAG, "Failed to load file: " + filePath, e);
+                queueMessage(webViewId, "error", "Failed to load file: " + e.getMessage());
+            }
+        }).start();
     }
     
     public void loadUrl(int id, String url) {
