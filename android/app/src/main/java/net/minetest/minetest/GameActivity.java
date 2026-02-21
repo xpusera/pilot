@@ -453,8 +453,8 @@ public class GameActivity extends SDLActivity {
 		return new String[]{
 			String.valueOf(hook.id),
 			hook.pattern,
-			hook.matchedOutput,
-			String.valueOf(hook.sourceCommandId)
+			hook.output,
+			String.valueOf(hook.sourceId)
 		};
 	}
 
