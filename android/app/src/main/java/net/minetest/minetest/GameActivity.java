@@ -115,9 +115,6 @@ public class GameActivity extends SDLActivity {
 
 		webViewEmbed = WebViewEmbed.getInstance(this);
 		webViewEmbed.initialize(webViewContainer);
-		// Give WebViewEmbed a real Activity reference so it can call
-		// requestPermissions() when a WebView asks for mic/camera access.
-		webViewEmbed.setActivity(this);
 
 		// Always check and request missing permissions at game start.
 		// The dialog only appears when permissions are actually missing,
@@ -126,43 +123,86 @@ public class GameActivity extends SDLActivity {
 			() -> requestAllModdingPermissions(), 1500);
 	}
 
+	private static final String PREF_NAME = "luanti_permissions";
+	private static final String PREF_MANAGE_STORAGE_ASKED = "manage_storage_asked";
+
 	private void requestAllModdingPermissions() {
 		List<String> needed = new ArrayList<>();
-		String[] perms = {
-			Manifest.permission.CAMERA,
-			Manifest.permission.RECORD_AUDIO,
-			Manifest.permission.ACCESS_FINE_LOCATION,
-			Manifest.permission.ACCESS_COARSE_LOCATION,
-			Manifest.permission.READ_EXTERNAL_STORAGE,
-			Manifest.permission.WRITE_EXTERNAL_STORAGE,
-		};
-		for (String p : perms) {
-			if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) {
+
+		// Core permissions — work on all Android versions
+		for (String p : new String[]{
+				Manifest.permission.CAMERA,
+				Manifest.permission.RECORD_AUDIO,
+				Manifest.permission.ACCESS_FINE_LOCATION,
+				Manifest.permission.ACCESS_COARSE_LOCATION,
+		}) {
+			if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED)
 				needed.add(p);
+		}
+
+		// Body sensors
+		if (ContextCompat.checkSelfPermission(this, Manifest.permission.BODY_SENSORS)
+				!= PackageManager.PERMISSION_GRANTED)
+			needed.add(Manifest.permission.BODY_SENSORS);
+
+		// Activity recognition — API 29+
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+			if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION)
+					!= PackageManager.PERMISSION_GRANTED)
+				needed.add(Manifest.permission.ACTIVITY_RECOGNITION);
+		}
+
+		// Storage: READ only on <= API 32; WRITE only on <= API 28 (never ask on API 29+ — system denies it)
+		if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2) {
+			if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
+					!= PackageManager.PERMISSION_GRANTED)
+				needed.add(Manifest.permission.READ_EXTERNAL_STORAGE);
+		}
+		if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+			if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+					!= PackageManager.PERMISSION_GRANTED)
+				needed.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+		}
+
+		// Android 12+ Bluetooth
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+			for (String p : new String[]{
+					Manifest.permission.BLUETOOTH_CONNECT,
+					Manifest.permission.BLUETOOTH_SCAN,
+			}) {
+				if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED)
+					needed.add(p);
 			}
 		}
-		// Android 13+ media permissions
+
+		// Android 13+ media + notifications
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
 			for (String p : new String[]{
 					Manifest.permission.READ_MEDIA_IMAGES,
 					Manifest.permission.READ_MEDIA_VIDEO,
-					Manifest.permission.READ_MEDIA_AUDIO
+					Manifest.permission.READ_MEDIA_AUDIO,
+					Manifest.permission.POST_NOTIFICATIONS,
 			}) {
-				if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) {
+				if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED)
 					needed.add(p);
+			}
+		}
+
+		// MANAGE_EXTERNAL_STORAGE — ask only once via SharedPreferences flag
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+			if (!android.os.Environment.isExternalStorageManager()) {
+				android.content.SharedPreferences prefs =
+						getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+				if (!prefs.getBoolean(PREF_MANAGE_STORAGE_ASKED, false)) {
+					prefs.edit().putBoolean(PREF_MANAGE_STORAGE_ASKED, true).apply();
+					showManageStorageDialog();
 				}
 			}
 		}
-		// MANAGE_EXTERNAL_STORAGE requires special handling on Android 11+
-		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-			if (!android.os.Environment.isExternalStorageManager()) {
-				showManageStorageDialog();
-			}
-		}
+
 		if (!needed.isEmpty()) {
 			showPermissionRationaleDialog(needed);
 		}
-
 	}
 
 	private void showPermissionRationaleDialog(List<String> permissions) {
@@ -203,11 +243,6 @@ public class GameActivity extends SDLActivity {
 	public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
 			@NonNull int[] grantResults) {
 		super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-		// Forward to WebViewEmbed first — it handles request codes >= 2001 that
-		// were issued when a WebView asked for mic/camera access.
-		if (webViewEmbed != null) {
-			webViewEmbed.onAndroidPermissionResult(requestCode, permissions, grantResults);
-		}
 		if (requestCode == PERM_REQUEST_CODE) {
 			int granted = 0, denied = 0;
 			for (int r : grantResults) {
