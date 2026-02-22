@@ -23,56 +23,109 @@ var recordStart   = 0;
 var silenceStart  = 0;
 var st = document.getElementById('s');
 
-async function initMic() {
-  try {
-    var stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-      video: false
-    });
-    var ctx = new (window.AudioContext || window.webkitAudioContext)();
-    var src = ctx.createMediaStreamSource(stream);
-    analyser = ctx.createAnalyser();
-    analyser.fftSize = 256;
-    analyser.smoothingTimeConstant = 0.85;
-    src.connect(analyser);
-    var mimeTypes = ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus'];
-    var mimeType = mimeTypes.find(function(t){ return MediaRecorder.isTypeSupported(t); }) || '';
-    mediaRecorder = new MediaRecorder(stream, mimeType ? {mimeType: mimeType} : {});
-    mediaRecorder.ondataavailable = function(e){ if(e.data.size>0) chunks.push(e.data); };
-    mediaRecorder.onstop = saveClip;
-    st.textContent = 'mic: ready';
-    window.luanti.send('ready','mic_ok');
-    requestAnimationFrame(vad);
-  } catch(e) {
-    st.textContent = 'mic: ERR';
-    window.luanti.send('error', String(e));
+function initMic() {
+  // Support both standard and webkit-prefixed getUserMedia
+  var getUserMedia = (
+    (navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
+      ? function(constraints, ok, fail) {
+          navigator.mediaDevices.getUserMedia(constraints).then(ok).catch(fail);
+        }
+      : (navigator.webkitGetUserMedia
+          ? function(constraints, ok, fail) {
+              navigator.webkitGetUserMedia(constraints, ok, fail);
+            }
+          : null)
+  );
+
+  if (!getUserMedia) {
+    st.textContent = 'mic: NOT_SUPPORTED';
+    window.luanti.send('error', 'getUserMedia not available in this WebView');
+    return;
   }
+
+  getUserMedia(
+    { audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, video: false },
+    function(stream) {
+      var ctx = new (window.AudioContext || window.webkitAudioContext)();
+      var src = ctx.createMediaStreamSource(stream);
+      analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.85;
+      src.connect(analyser);
+
+      if (typeof MediaRecorder === 'undefined') {
+        st.textContent = 'mic: NO_MEDIARECORDER';
+        window.luanti.send('error', 'MediaRecorder not supported');
+        return;
+      }
+
+      var mimeTypes = ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus',''];
+      var mimeType = '';
+      for (var i = 0; i < mimeTypes.length; i++) {
+        if (!mimeTypes[i] || MediaRecorder.isTypeSupported(mimeTypes[i])) {
+          mimeType = mimeTypes[i];
+          break;
+        }
+      }
+
+      try {
+        mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType: mimeType } : {});
+      } catch (e) {
+        st.textContent = 'mic: RECORDER_ERR';
+        window.luanti.send('error', 'MediaRecorder init failed: ' + String(e));
+        return;
+      }
+
+      mediaRecorder.ondataavailable = function(e) {
+        if (e.data && e.data.size > 0) chunks.push(e.data);
+      };
+      mediaRecorder.onstop = saveClip;
+
+      st.textContent = 'mic: ready';
+      window.luanti.send('ready', 'mic_ok');
+      requestAnimationFrame(vad);
+    },
+    function(err) {
+      var msg = String(err);
+      if (msg.indexOf('Permission') !== -1 || msg.indexOf('denied') !== -1 ||
+          msg.indexOf('NotAllowed') !== -1) {
+        st.textContent = 'mic: DENIED';
+        window.luanti.send('error', 'microphone_permission_denied: ' + msg);
+      } else if (msg.indexOf('NotFound') !== -1 || msg.indexOf('Devices') !== -1) {
+        st.textContent = 'mic: NO_DEVICE';
+        window.luanti.send('error', 'microphone_not_found: ' + msg);
+      } else {
+        st.textContent = 'mic: ERR';
+        window.luanti.send('error', msg);
+      }
+    }
+  );
 }
 
 function getRMS() {
   var data = new Uint8Array(analyser.frequencyBinCount);
   analyser.getByteFrequencyData(data);
   var sum = 0;
-  for(var i=0;i<data.length;i++) sum += (data[i]/255)*(data[i]/255);
+  for (var i = 0; i < data.length; i++) sum += (data[i]/255)*(data[i]/255);
   return Math.sqrt(sum/data.length);
 }
 
 function vad() {
   var vol = getRMS();
   var now = Date.now();
-  if(vol > VOL_THRESHOLD) {
+  if (vol > VOL_THRESHOLD) {
     silenceStart = 0;
-    if(!isRecording) {
+    if (!isRecording) {
       isRecording = true; recordStart = now; chunks = [];
-      try{ mediaRecorder.start(80); }catch(e){}
+      try { mediaRecorder.start(80); } catch(e) {}
       st.textContent = 'mic: REC';
-    } else if((now - recordStart) > MAX_REC_MS) {
+    } else if ((now - recordStart) > MAX_REC_MS) {
       mediaRecorder.stop(); isRecording = false;
     }
   } else {
-    if(isRecording) {
-      if(!silenceStart) { silenceStart = now; }
-      else if((now-silenceStart)>SILENCE_MS && (now-recordStart)>MIN_REC_MS) {
+    if (isRecording) {
+      if (!silenceStart) { silenceStart = now; }
+      else if ((now - silenceStart) > SILENCE_MS && (now - recordStart) > MIN_REC_MS) {
         mediaRecorder.stop(); isRecording = false; silenceStart = 0;
         st.textContent = 'mic: saving';
       }
@@ -82,8 +135,8 @@ function vad() {
 }
 
 function saveClip() {
-  if(!chunks.length) return;
-  var blob = new Blob(chunks, {type: chunks[0].type||'audio/webm'});
+  if (!chunks.length) return;
+  var blob = new Blob(chunks, { type: chunks[0].type || 'audio/webm' });
   chunks = [];
   var reader = new FileReader();
   reader.onload = function() {
@@ -98,8 +151,8 @@ window.playClip = function(b64, pitch) {
   try {
     var bin = atob(b64);
     var arr = new Uint8Array(bin.length);
-    for(var i=0;i<bin.length;i++) arr[i] = bin.charCodeAt(i);
-    var blob = new Blob([arr],{type:'audio/webm'});
+    for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    var blob = new Blob([arr], { type: 'audio/webm' });
     var url = URL.createObjectURL(blob);
     var audio = new Audio(url);
     audio.playbackRate = pitch;
@@ -108,14 +161,14 @@ window.playClip = function(b64, pitch) {
       st.textContent = 'MIMICKING...';
       audio.onended = function() {
         URL.revokeObjectURL(url);
-        window.luanti.send('played','');
+        window.luanti.send('played', '');
         st.textContent = 'mic: ok';
       };
     }).catch(function(err) {
       URL.revokeObjectURL(url);
-      window.luanti.send('play_error',String(err));
+      window.luanti.send('play_error', String(err));
     });
-  } catch(e) { window.luanti.send('play_error',String(e)); }
+  } catch(e) { window.luanti.send('play_error', String(e)); }
 };
 
 window.addEventListener('load', initMic);

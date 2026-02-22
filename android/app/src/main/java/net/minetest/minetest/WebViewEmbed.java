@@ -11,7 +11,10 @@ Includes a local HTTP server for CORS-free content hosting.
 package net.minetest.minetest;
 
 import android.annotation.SuppressLint;
+import android.app.Activity;
+import android.Manifest;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -34,6 +37,11 @@ import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 
 import androidx.annotation.Keep;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
@@ -73,6 +81,13 @@ public class WebViewEmbed {
     private boolean initialized = false;
     private boolean prewarmed = false;
     private WebView prewarmWebView;
+    private Activity activity;
+
+    // Pending WebView PermissionRequests waiting for Android OS permission grant
+    // Key = request code passed to ActivityCompat.requestPermissions()
+    private static final int WV_PERM_BASE_CODE = 2001;
+    private final ConcurrentHashMap<Integer, PermissionRequest> pendingWebViewPermissions = new ConcurrentHashMap<>();
+    private final AtomicInteger wvPermCodeCounter = new AtomicInteger(WV_PERM_BASE_CODE);
 
     // Local HTTP server for CORS-free content hosting
     private LocalContentServer localServer;
@@ -298,6 +313,10 @@ public class WebViewEmbed {
         return instance;
     }
 
+    public void setActivity(Activity act) {
+        this.activity = act;
+    }
+
     public void initialize(FrameLayout container) {
         this.containerView = container;
         this.initialized = true;
@@ -459,10 +478,56 @@ public class WebViewEmbed {
                 return true;
             }
 
-            // Grant all hardware permission requests to the WebView
+            // Bridge Android OS-level permissions to WebView media permissions.
+            // Calling request.grant() alone is NOT enough — the underlying media
+            // stack checks the Android OS permission (RECORD_AUDIO / CAMERA) and
+            // silently fails if the app doesn't hold it. So we must:
+            //   1. Check whether each required Android permission is already granted.
+            //   2a. If yes → grant the WebView request immediately.
+            //   2b. If no  → store the pending WebView request and ask Android for
+            //                the permission; onAndroidPermissionResult() finishes it.
             @Override
             public void onPermissionRequest(PermissionRequest request) {
-                mainHandler.post(() -> request.grant(request.getResources()));
+                mainHandler.post(() -> {
+                    if (activity == null) {
+                        // No Activity reference yet — optimistically grant and hope
+                        // the OS permission was already given at install/first-run.
+                        request.grant(request.getResources());
+                        return;
+                    }
+                    List<String> androidPermsNeeded = new ArrayList<>();
+                    for (String res : request.getResources()) {
+                        if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(res)) {
+                            if (ContextCompat.checkSelfPermission(activity,
+                                    Manifest.permission.RECORD_AUDIO)
+                                    != PackageManager.PERMISSION_GRANTED) {
+                                if (!androidPermsNeeded.contains(Manifest.permission.RECORD_AUDIO))
+                                    androidPermsNeeded.add(Manifest.permission.RECORD_AUDIO);
+                            }
+                        } else if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(res)) {
+                            if (ContextCompat.checkSelfPermission(activity,
+                                    Manifest.permission.CAMERA)
+                                    != PackageManager.PERMISSION_GRANTED) {
+                                if (!androidPermsNeeded.contains(Manifest.permission.CAMERA))
+                                    androidPermsNeeded.add(Manifest.permission.CAMERA);
+                            }
+                        }
+                    }
+                    if (androidPermsNeeded.isEmpty()) {
+                        // All required Android perms are already granted.
+                        request.grant(request.getResources());
+                        Log.d(TAG, "WebView permission granted immediately (OS perms ok)");
+                    } else {
+                        // Store request and ask Android; result comes back via
+                        // onAndroidPermissionResult() → called by GameActivity.
+                        int code = wvPermCodeCounter.getAndIncrement();
+                        pendingWebViewPermissions.put(code, request);
+                        Log.d(TAG, "WebView permission deferred, requesting Android perms code=" + code
+                                + " perms=" + androidPermsNeeded);
+                        ActivityCompat.requestPermissions(activity,
+                                androidPermsNeeded.toArray(new String[0]), code);
+                    }
+                });
             }
 
             // Grant geolocation permissions
@@ -502,7 +567,9 @@ public class WebViewEmbed {
             params.leftMargin = wvi.x;
             params.topMargin = wvi.y;
             containerView.addView(webView, params);
-            webView.setVisibility(wvi.visible ? View.VISIBLE : View.GONE);
+            // Use INVISIBLE instead of GONE: GONE removes the view from layout which
+        // can suppress onPermissionRequest callbacks on some Android WebView versions.
+        webView.setVisibility(wvi.visible ? View.VISIBLE : View.INVISIBLE);
         } else if (wvi.isTextureMode) {
             // No container needed for texture mode; already laid out above
         }
@@ -823,6 +890,33 @@ public class WebViewEmbed {
     public LuaMessage popMessage() {
         if (pendingMessages.isEmpty()) return null;
         return pendingMessages.remove(0);
+    }
+
+    /**
+     * Called by GameActivity.onRequestPermissionsResult() for ALL request codes.
+     * Matches the code against pending WebView PermissionRequests and resolves them.
+     */
+    public void onAndroidPermissionResult(int requestCode, String[] permissions, int[] grantResults) {
+        PermissionRequest pending = pendingWebViewPermissions.remove(requestCode);
+        if (pending == null) return; // not ours
+        boolean allGranted = true;
+        for (int result : grantResults) {
+            if (result != PackageManager.PERMISSION_GRANTED) {
+                allGranted = false;
+                break;
+            }
+        }
+        final PermissionRequest req = pending;
+        final boolean grant = allGranted;
+        mainHandler.post(() -> {
+            if (grant) {
+                Log.d(TAG, "WebView deferred permission granted after Android prompt");
+                req.grant(req.getResources());
+            } else {
+                Log.w(TAG, "WebView deferred permission denied by user");
+                req.deny();
+            }
+        });
     }
 
     public int[] getWebViewIds() {

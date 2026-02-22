@@ -29,7 +29,6 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ActivityNotFoundException;
-import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
@@ -109,9 +108,6 @@ public class GameActivity extends SDLActivity {
 	}
 
 	private static final int PERM_REQUEST_CODE = 1001;
-	private static final String PREFS_NAME = "LuantiGamePrefs";
-	private static final String PREF_PERMISSIONS_REQUESTED = "permissions_requested_v2";
-
 	private void initializeModdingBridges() {
 		webViewContainer = new FrameLayout(this);
 		addContentView(webViewContainer, new FrameLayout.LayoutParams(
@@ -120,18 +116,18 @@ public class GameActivity extends SDLActivity {
 
 		webViewEmbed = WebViewEmbed.getInstance(this);
 		webViewEmbed.initialize(webViewContainer);
+		// Give WebViewEmbed a real Activity reference so it can call
+		// requestPermissions() when a WebView asks for mic/camera access.
+		webViewEmbed.setActivity(this);
 
 		termuxBridge = TermuxBridge.getInstance(this);
 		termuxBridge.initialize();
 
-		// Request all required permissions on first game join
-		SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-		if (!prefs.getBoolean(PREF_PERMISSIONS_REQUESTED, false)) {
-			new Handler(Looper.getMainLooper()).postDelayed(() -> {
-				requestAllModdingPermissions();
-				prefs.edit().putBoolean(PREF_PERMISSIONS_REQUESTED, true).apply();
-			}, 2000);
-		}
+		// Always check and request missing permissions at game start.
+		// The dialog only appears when permissions are actually missing,
+		// so repeated calls are harmless when everything is already granted.
+		new Handler(Looper.getMainLooper()).postDelayed(
+			() -> requestAllModdingPermissions(), 1500);
 	}
 
 	private void requestAllModdingPermissions() {
@@ -229,6 +225,11 @@ public class GameActivity extends SDLActivity {
 	public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
 			@NonNull int[] grantResults) {
 		super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+		// Forward to WebViewEmbed first — it handles request codes >= 2001 that
+		// were issued when a WebView asked for mic/camera access.
+		if (webViewEmbed != null) {
+			webViewEmbed.onAndroidPermissionResult(requestCode, permissions, grantResults);
+		}
 		if (requestCode == PERM_REQUEST_CODE) {
 			int granted = 0, denied = 0;
 			for (int r : grantResults) {
