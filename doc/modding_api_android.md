@@ -212,11 +212,11 @@ local function start_ai_agent()
         core.log("error", "Termux not available")
         return
     end
-    
+
     -- Start AI server in Termux
     core.termux.execute_shell("python ~/ai_agent.py --port 8080", false)
     ai_active = true
-    
+
     -- Hook for AI responses
     core.termux.add_output_hook("AI_ACTION:", false, function(hook)
         local action = hook.output:match("AI_ACTION:(%w+)")
@@ -259,7 +259,7 @@ core.register_on_connect(function()
         height = 100,
         texture_mode = false
     })
-    
+
     core.webview.load_html(hud_webview, [[
 <!DOCTYPE html>
 <html>
