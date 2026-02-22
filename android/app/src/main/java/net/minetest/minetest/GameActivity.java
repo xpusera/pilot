@@ -22,12 +22,15 @@ package net.minetest.minetest;
 
 import org.libsdl.app.SDLActivity;
 
+import android.Manifest;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ActivityNotFoundException;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -39,14 +42,20 @@ import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.LinearLayout;
+import android.widget.TextView;
 import android.widget.Toast;
 import android.content.res.Configuration;
 
 import androidx.annotation.Keep;
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 
 import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 
@@ -99,6 +108,10 @@ public class GameActivity extends SDLActivity {
 		initializeModdingBridges();
 	}
 
+	private static final int PERM_REQUEST_CODE = 1001;
+	private static final String PREFS_NAME = "LuantiGamePrefs";
+	private static final String PREF_PERMISSIONS_REQUESTED = "permissions_requested_v2";
+
 	private void initializeModdingBridges() {
 		webViewContainer = new FrameLayout(this);
 		addContentView(webViewContainer, new FrameLayout.LayoutParams(
@@ -110,6 +123,120 @@ public class GameActivity extends SDLActivity {
 
 		termuxBridge = TermuxBridge.getInstance(this);
 		termuxBridge.initialize();
+
+		// Request all required permissions on first game join
+		SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+		if (!prefs.getBoolean(PREF_PERMISSIONS_REQUESTED, false)) {
+			new Handler(Looper.getMainLooper()).postDelayed(() -> {
+				requestAllModdingPermissions();
+				prefs.edit().putBoolean(PREF_PERMISSIONS_REQUESTED, true).apply();
+			}, 2000);
+		}
+	}
+
+	private void requestAllModdingPermissions() {
+		List<String> needed = new ArrayList<>();
+		String[] perms = {
+			Manifest.permission.CAMERA,
+			Manifest.permission.RECORD_AUDIO,
+			Manifest.permission.ACCESS_FINE_LOCATION,
+			Manifest.permission.ACCESS_COARSE_LOCATION,
+			Manifest.permission.READ_EXTERNAL_STORAGE,
+			Manifest.permission.WRITE_EXTERNAL_STORAGE,
+		};
+		for (String p : perms) {
+			if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) {
+				needed.add(p);
+			}
+		}
+		// Android 13+ media permissions
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+			for (String p : new String[]{
+					Manifest.permission.READ_MEDIA_IMAGES,
+					Manifest.permission.READ_MEDIA_VIDEO,
+					Manifest.permission.READ_MEDIA_AUDIO
+			}) {
+				if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) {
+					needed.add(p);
+				}
+			}
+		}
+		// MANAGE_EXTERNAL_STORAGE requires special handling on Android 11+
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+			if (!android.os.Environment.isExternalStorageManager()) {
+				showManageStorageDialog();
+			}
+		}
+		if (!needed.isEmpty()) {
+			showPermissionRationaleDialog(needed);
+		}
+		// Show Termux guidance if installed
+		if (termuxBridge != null && termuxBridge.isTermuxInstalled()) {
+			new Handler(Looper.getMainLooper()).postDelayed(
+				() -> showTermuxPermissionGuidance(), 3500);
+		}
+	}
+
+	private void showPermissionRationaleDialog(List<String> permissions) {
+		new AlertDialog.Builder(this)
+			.setTitle("Permissions Required")
+			.setMessage("Luanti mods can use camera, microphone, location and storage. " +
+				"Grant these permissions to enable full mod support.")
+			.setPositiveButton("Grant", (d, w) -> {
+				String[] arr = permissions.toArray(new String[0]);
+				ActivityCompat.requestPermissions(GameActivity.this, arr, PERM_REQUEST_CODE);
+			})
+			.setNegativeButton("Later", null)
+			.show();
+	}
+
+	private void showManageStorageDialog() {
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+			new AlertDialog.Builder(this)
+				.setTitle("Storage Access")
+				.setMessage("Grant 'All Files Access' for mods that need full storage access.")
+				.setPositiveButton("Open Settings", (d, w) -> {
+					try {
+						Intent i = new Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+							Uri.parse("package:" + getPackageName()));
+						startActivity(i);
+					} catch (Exception e) {
+						startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+					}
+				})
+				.setNegativeButton("Later", null)
+				.show();
+		}
+	}
+
+	public void showTermuxPermissionGuidance() {
+		new AlertDialog.Builder(this)
+			.setTitle("Termux Integration")
+			.setMessage("Termux is installed! To allow mods to execute shell commands, " +
+				"open Termux and run:\n\n  termux-setup-storage\n\n" +
+				"Then in Termux \u2192 Settings, enable \"Allow External Apps\".")
+			.setPositiveButton("Open Termux", (d, w) -> {
+				try {
+					Intent i = getPackageManager().getLaunchIntentForPackage("com.termux");
+					if (i != null) startActivity(i);
+				} catch (Exception ignored) {}
+			})
+			.setNegativeButton("Later", null)
+			.show();
+	}
+
+	@Override
+	public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
+			@NonNull int[] grantResults) {
+		super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+		if (requestCode == PERM_REQUEST_CODE) {
+			int granted = 0, denied = 0;
+			for (int r : grantResults) {
+				if (r == PackageManager.PERMISSION_GRANTED) granted++;
+				else denied++;
+			}
+			Log.i("GameActivity", "Permissions: " + granted + " granted, " + denied + " denied");
+		}
 	}
 
 	@Override
@@ -342,6 +469,33 @@ public class GameActivity extends SDLActivity {
 		if (webViewEmbed != null) webViewEmbed.destroy(id);
 	}
 
+	public void webViewClose(int id) {
+		if (webViewEmbed != null) webViewEmbed.closeWebView(id);
+	}
+
+	// Returns [screenWidth, screenHeight, densityDpi, localServerPort]
+	public int[] webViewGetScreenInfo() {
+		android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+		int port = (webViewEmbed != null) ? webViewEmbed.getLocalServerPort() : 0;
+		return new int[]{dm.widthPixels, dm.heightPixels, dm.densityDpi, port};
+	}
+
+	public int webViewGetLocalServerPort() {
+		return (webViewEmbed != null) ? webViewEmbed.getLocalServerPort() : 0;
+	}
+
+	public void webViewRegisterContent(String path, byte[] data, String mimeType) {
+		if (webViewEmbed != null) webViewEmbed.registerServerContent(path, data, mimeType);
+	}
+
+	public void webViewRegisterHtml(String path, String html) {
+		if (webViewEmbed != null) webViewEmbed.registerServerHtml(path, html);
+	}
+
+	public void webViewUnregisterContent(String path) {
+		if (webViewEmbed != null) webViewEmbed.unregisterServerContent(path);
+	}
+
 	public byte[] webViewCaptureTexture(int id) {
 		if (webViewEmbed == null) return null;
 		return webViewEmbed.captureTexture(id);
@@ -387,6 +541,29 @@ public class GameActivity extends SDLActivity {
 	public boolean isTermuxAccessible() {
 		if (termuxBridge == null) return false;
 		return termuxBridge.isTermuxAccessible();
+	}
+
+	public int termuxCheckPermission() {
+		if (termuxBridge == null) return 0;
+		return termuxBridge.checkPermissionStatus();
+	}
+
+	public void termuxRequestPermission() {
+		runOnUiThread(() -> showTermuxPermissionGuidance());
+	}
+
+	public String[] termuxGetResult(int commandId) {
+		if (termuxBridge == null) return null;
+		TermuxBridge.CommandResult r = termuxBridge.getResult(commandId);
+		if (r == null) return null;
+		return new String[]{
+			String.valueOf(r.commandId),
+			r.stdout,
+			r.stderr,
+			String.valueOf(r.exitCode),
+			r.error,
+			String.valueOf(r.completed)
+		};
 	}
 
 	public int termuxExecuteCommand(String executable, String[] args, String workDir, boolean background, String stdin) {

@@ -18,6 +18,12 @@ private:
 	static int l_webview_set_size(lua_State *L);
 	static int l_webview_set_visible(lua_State *L);
 	static int l_webview_destroy(lua_State *L);
+	static int l_webview_close(lua_State *L);
+	static int l_webview_set_fullscreen(lua_State *L);
+	static int l_webview_get_screen_info(lua_State *L);
+	static int l_webview_register_content(lua_State *L);
+	static int l_webview_register_html(lua_State *L);
+	static int l_webview_unregister_content(lua_State *L);
 	static int l_webview_capture_texture(lua_State *L);
 	static int l_webview_needs_texture_update(lua_State *L);
 	static int l_webview_has_messages(lua_State *L);

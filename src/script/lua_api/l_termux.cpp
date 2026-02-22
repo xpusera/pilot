@@ -347,7 +347,7 @@ int ModApiTermux::l_termux_pop_result(lua_State *L)
 	std::string exitCode = readJavaString(env, jExitCode);
 	std::string error = readJavaString(env, jError);
 
-	lua_pushinteger(L, std::stoi(commandId));
+	try { lua_pushinteger(L, std::stoi(commandId)); } catch (...) { lua_pushinteger(L, -1); }
 	lua_setfield(L, -2, "command_id");
 
 	lua_pushstring(L, stdout_str.c_str());
@@ -356,7 +356,7 @@ int ModApiTermux::l_termux_pop_result(lua_State *L)
 	lua_pushstring(L, stderr_str.c_str());
 	lua_setfield(L, -2, "stderr");
 
-	lua_pushinteger(L, std::stoi(exitCode));
+	try { lua_pushinteger(L, std::stoi(exitCode)); } catch (...) { lua_pushinteger(L, -1); }
 	lua_setfield(L, -2, "exit_code");
 
 	lua_pushstring(L, error.c_str());
@@ -462,7 +462,7 @@ int ModApiTermux::l_termux_pop_triggered_hook(lua_State *L)
 	std::string output = readJavaString(env, jOutput);
 	std::string sourceCmdId = readJavaString(env, jSourceCmdId);
 
-	lua_pushinteger(L, std::stoi(hookId));
+	try { lua_pushinteger(L, std::stoi(hookId)); } catch (...) { lua_pushinteger(L, -1); }
 	lua_setfield(L, -2, "hook_id");
 
 	lua_pushstring(L, pattern.c_str());
@@ -471,7 +471,7 @@ int ModApiTermux::l_termux_pop_triggered_hook(lua_State *L)
 	lua_pushstring(L, output.c_str());
 	lua_setfield(L, -2, "output");
 
-	lua_pushinteger(L, std::stoi(sourceCmdId));
+	try { lua_pushinteger(L, std::stoi(sourceCmdId)); } catch (...) { lua_pushinteger(L, -1); }
 	lua_setfield(L, -2, "source_command_id");
 
 	env->DeleteLocalRef(jHookId);
@@ -532,10 +532,127 @@ int ModApiTermux::l_termux_get_paths(lua_State *L)
 #endif
 }
 
+int ModApiTermux::l_termux_check_permission(lua_State *L)
+{
+	NO_MAP_LOCK_REQUIRED;
+#ifdef __ANDROID__
+	JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+	jobject activity = (jobject)SDL_AndroidGetActivity();
+	jclass cls = env->GetObjectClass(activity);
+
+	jmethodID method = env->GetMethodID(cls, "termuxCheckPermission", "()I");
+	if (method == nullptr) {
+		lua_pushinteger(L, 0);
+		return 1;
+	}
+
+	jint result = env->CallIntMethod(activity, method);
+	lua_pushinteger(L, result);
+	return 1;
+#else
+	lua_pushinteger(L, 0);
+	return 1;
+#endif
+}
+
+int ModApiTermux::l_termux_request_permission(lua_State *L)
+{
+	NO_MAP_LOCK_REQUIRED;
+#ifdef __ANDROID__
+	JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+	jobject activity = (jobject)SDL_AndroidGetActivity();
+	jclass cls = env->GetObjectClass(activity);
+
+	jmethodID method = env->GetMethodID(cls, "termuxRequestPermission", "()V");
+	if (method != nullptr)
+		env->CallVoidMethod(activity, method);
+#endif
+	return 0;
+}
+
+int ModApiTermux::l_termux_get_result(lua_State *L)
+{
+	NO_MAP_LOCK_REQUIRED;
+#ifdef __ANDROID__
+	int commandId = luaL_checkinteger(L, 1);
+
+	JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+	jobject activity = (jobject)SDL_AndroidGetActivity();
+	jclass cls = env->GetObjectClass(activity);
+
+	jmethodID method = env->GetMethodID(cls, "termuxGetResult", "(I)[Ljava/lang/String;");
+	if (method == nullptr) {
+		lua_pushnil(L);
+		return 1;
+	}
+
+	jobjectArray result = (jobjectArray)env->CallObjectMethod(activity, method, commandId);
+	if (result == nullptr) {
+		lua_pushnil(L);
+		return 1;
+	}
+
+	jsize len = env->GetArrayLength(result);
+	if (len < 5) {
+		lua_pushnil(L);
+		return 1;
+	}
+
+	lua_newtable(L);
+
+	jstring jCommandId = (jstring)env->GetObjectArrayElement(result, 0);
+	jstring jStdout = (jstring)env->GetObjectArrayElement(result, 1);
+	jstring jStderr = (jstring)env->GetObjectArrayElement(result, 2);
+	jstring jExitCode = (jstring)env->GetObjectArrayElement(result, 3);
+	jstring jError = (jstring)env->GetObjectArrayElement(result, 4);
+	jstring jCompleted = len >= 6 ? (jstring)env->GetObjectArrayElement(result, 5) : nullptr;
+
+	std::string commandIdStr = readJavaString(env, jCommandId);
+	std::string stdout_str = readJavaString(env, jStdout);
+	std::string stderr_str = readJavaString(env, jStderr);
+	std::string exitCode = readJavaString(env, jExitCode);
+	std::string error = readJavaString(env, jError);
+	std::string completed = jCompleted ? readJavaString(env, jCompleted) : "false";
+
+	try { lua_pushinteger(L, std::stoi(commandIdStr)); } catch (...) { lua_pushinteger(L, commandId); }
+	lua_setfield(L, -2, "command_id");
+
+	lua_pushstring(L, stdout_str.c_str());
+	lua_setfield(L, -2, "stdout");
+
+	lua_pushstring(L, stderr_str.c_str());
+	lua_setfield(L, -2, "stderr");
+
+	try { lua_pushinteger(L, std::stoi(exitCode)); } catch (...) { lua_pushinteger(L, -1); }
+	lua_setfield(L, -2, "exit_code");
+
+	lua_pushstring(L, error.c_str());
+	lua_setfield(L, -2, "error");
+
+	lua_pushboolean(L, completed == "true");
+	lua_setfield(L, -2, "completed");
+
+	env->DeleteLocalRef(jCommandId);
+	env->DeleteLocalRef(jStdout);
+	env->DeleteLocalRef(jStderr);
+	env->DeleteLocalRef(jExitCode);
+	env->DeleteLocalRef(jError);
+	if (jCompleted) env->DeleteLocalRef(jCompleted);
+	env->DeleteLocalRef(result);
+
+	return 1;
+#else
+	lua_pushnil(L);
+	return 1;
+#endif
+}
+
 void ModApiTermux::Initialize(lua_State *L, int top)
 {
 	API_FCT(termux_is_installed);
 	API_FCT(termux_is_accessible);
+	API_FCT(termux_check_permission);
+	API_FCT(termux_request_permission);
 	API_FCT(termux_execute);
 	API_FCT(termux_execute_shell);
 	API_FCT(termux_execute_script);
@@ -544,6 +661,7 @@ void ModApiTermux::Initialize(lua_State *L, int top)
 	API_FCT(termux_send_input);
 	API_FCT(termux_has_results);
 	API_FCT(termux_pop_result);
+	API_FCT(termux_get_result);
 	API_FCT(termux_is_completed);
 	API_FCT(termux_has_triggered_hooks);
 	API_FCT(termux_pop_triggered_hook);
