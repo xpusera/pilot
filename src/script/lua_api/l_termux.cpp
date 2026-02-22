@@ -76,7 +76,7 @@ int ModApiTermux::l_termux_execute(lua_State *L)
 	NO_MAP_LOCK_REQUIRED;
 #ifdef __ANDROID__
 	std::string executable = luaL_checkstring(L, 1);
-	
+
 	std::vector<std::string> args;
 	if (lua_istable(L, 2)) {
 		lua_pushnil(L);
@@ -87,17 +87,17 @@ int ModApiTermux::l_termux_execute(lua_State *L)
 			lua_pop(L, 1);
 		}
 	}
-	
+
 	std::string workDir = "";
 	if (lua_isstring(L, 3)) {
 		workDir = lua_tostring(L, 3);
 	}
-	
+
 	bool background = true;
 	if (lua_isboolean(L, 4)) {
 		background = lua_toboolean(L, 4);
 	}
-	
+
 	std::string stdin_str = "";
 	if (lua_isstring(L, 5)) {
 		stdin_str = lua_tostring(L, 5);
@@ -107,7 +107,7 @@ int ModApiTermux::l_termux_execute(lua_State *L)
 	jobject activity = (jobject)SDL_AndroidGetActivity();
 	jclass cls = env->GetObjectClass(activity);
 
-	jmethodID method = env->GetMethodID(cls, "termuxExecuteCommand", 
+	jmethodID method = env->GetMethodID(cls, "termuxExecuteCommand",
 		"(Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;)I");
 	if (method == nullptr) {
 		lua_pushinteger(L, -1);
@@ -115,7 +115,7 @@ int ModApiTermux::l_termux_execute(lua_State *L)
 	}
 
 	jstring jexec = env->NewStringUTF(executable.c_str());
-	
+
 	jclass stringClass = env->FindClass("java/lang/String");
 	jobjectArray jargs = env->NewObjectArray(args.size(), stringClass, nullptr);
 	for (size_t i = 0; i < args.size(); i++) {
@@ -123,7 +123,7 @@ int ModApiTermux::l_termux_execute(lua_State *L)
 		env->SetObjectArrayElement(jargs, i, jarg);
 		env->DeleteLocalRef(jarg);
 	}
-	
+
 	jstring jworkDir = env->NewStringUTF(workDir.c_str());
 	jstring jstdin = env->NewStringUTF(stdin_str.c_str());
 

@@ -239,9 +239,9 @@ int ModApiWebView::l_webview_capture_texture(lua_State *L)
 
 	jsize len = env->GetArrayLength(result);
 	jbyte *bytes = env->GetByteArrayElements(result, nullptr);
-	
+
 	lua_pushlstring(L, (const char *)bytes, len);
-	
+
 	env->ReleaseByteArrayElements(result, bytes, 0);
 	env->DeleteLocalRef(result);
 	return 1;
@@ -406,7 +406,7 @@ int ModApiWebView::l_webview_get_texture_size(lua_State *L)
 
 	jmethodID getWidth = env->GetMethodID(cls, "webViewGetTextureWidth", "(I)I");
 	jmethodID getHeight = env->GetMethodID(cls, "webViewGetTextureHeight", "(I)I");
-	
+
 	if (getWidth == nullptr || getHeight == nullptr) {
 		lua_pushinteger(L, 0);
 		lua_pushinteger(L, 0);
