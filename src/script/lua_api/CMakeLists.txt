@@ -45,5 +45,4 @@ set(client_SCRIPT_LUA_API_SRCS
 	${CMAKE_CURRENT_SOURCE_DIR}/l_storage.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/l_sscsm.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/l_webview.cpp
-	${CMAKE_CURRENT_SOURCE_DIR}/l_termux.cpp
 	PARENT_SCOPE)

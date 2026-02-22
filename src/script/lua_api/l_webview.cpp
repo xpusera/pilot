@@ -597,6 +597,63 @@ int ModApiWebView::l_webview_unregister_content(lua_State *L)
 	return 0;
 }
 
+int ModApiWebView::l_webview_capture_png(lua_State *L)
+{
+	NO_MAP_LOCK_REQUIRED;
+#ifdef __ANDROID__
+	int id = luaL_checkinteger(L, 1);
+
+	JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+	jobject activity = (jobject)SDL_AndroidGetActivity();
+	jclass cls = env->GetObjectClass(activity);
+
+	jmethodID method = env->GetMethodID(cls, "webViewCaptureAsPng", "(I)[B");
+	if (method == nullptr) {
+		lua_pushnil(L);
+		return 1;
+	}
+
+	jbyteArray result = (jbyteArray)env->CallObjectMethod(activity, method, id);
+	if (result == nullptr) {
+		lua_pushnil(L);
+		return 1;
+	}
+
+	jsize len = env->GetArrayLength(result);
+	std::string pngData(len, '\0');
+	env->GetByteArrayRegion(result, 0, len, (jbyte *)&pngData[0]);
+	env->DeleteLocalRef(result);
+
+	lua_pushlstring(L, pngData.data(), pngData.size());
+	return 1;
+#else
+	lua_pushnil(L);
+	return 1;
+#endif
+}
+
+int ModApiWebView::l_webview_set_background_color(lua_State *L)
+{
+	NO_MAP_LOCK_REQUIRED;
+#ifdef __ANDROID__
+	int id = luaL_checkinteger(L, 1);
+	int r = luaL_optinteger(L, 2, 255);
+	int g = luaL_optinteger(L, 3, 255);
+	int b = luaL_optinteger(L, 4, 255);
+	int a = luaL_optinteger(L, 5, 255);
+
+	JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+	jobject activity = (jobject)SDL_AndroidGetActivity();
+	jclass cls = env->GetObjectClass(activity);
+
+	jmethodID method = env->GetMethodID(cls, "webViewSetBackgroundColor", "(IIIII)V");
+	if (method == nullptr) return 0;
+
+	env->CallVoidMethod(activity, method, id, r, g, b, a);
+#endif
+	return 0;
+}
+
 void ModApiWebView::Initialize(lua_State *L, int top)
 {
 	API_FCT(webview_create);
@@ -615,6 +672,8 @@ void ModApiWebView::Initialize(lua_State *L, int top)
 	API_FCT(webview_register_html);
 	API_FCT(webview_unregister_content);
 	API_FCT(webview_capture_texture);
+	API_FCT(webview_capture_png);
+	API_FCT(webview_set_background_color);
 	API_FCT(webview_needs_texture_update);
 	API_FCT(webview_has_messages);
 	API_FCT(webview_pop_message);

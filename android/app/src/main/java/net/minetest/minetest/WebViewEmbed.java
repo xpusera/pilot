@@ -33,6 +33,8 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
+import android.net.http.SslError;
+import android.webkit.SslErrorHandler;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 
@@ -48,6 +50,7 @@ import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PrintWriter;
@@ -252,17 +255,31 @@ public class WebViewEmbed {
                 }
 
                 String req = requestLine.toString().trim();
+                String method = "GET";
                 String path = "/";
-                if (req.startsWith("GET ") || req.startsWith("POST ")) {
-                    String[] parts = req.split(" ");
-                    if (parts.length >= 2) {
-                        path = parts[1];
-                        int q = path.indexOf('?');
-                        if (q >= 0) path = path.substring(0, q);
-                    }
+                String[] reqParts = req.split(" ");
+                if (reqParts.length >= 2) {
+                    method = reqParts[0];
+                    path = reqParts[1];
+                    int q = path.indexOf('?');
+                    if (q >= 0) path = path.substring(0, q);
                 }
 
                 PrintWriter pw = new PrintWriter(out, false);
+
+                // Handle CORS preflight
+                if ("OPTIONS".equals(method)) {
+                    pw.print("HTTP/1.1 204 No Content\r\n");
+                    pw.print("Access-Control-Allow-Origin: *\r\n");
+                    pw.print("Access-Control-Allow-Methods: GET, POST, OPTIONS, PUT, DELETE, HEAD\r\n");
+                    pw.print("Access-Control-Allow-Headers: *\r\n");
+                    pw.print("Access-Control-Max-Age: 86400\r\n");
+                    pw.print("\r\n");
+                    pw.flush();
+                    client.close();
+                    return;
+                }
+
                 byte[] body = content.get(path);
                 if (body != null) {
                     String mime = contentTypes.getOrDefault(path, "application/octet-stream");
@@ -270,7 +287,7 @@ public class WebViewEmbed {
                     pw.print("Content-Type: " + mime + "\r\n");
                     pw.print("Content-Length: " + body.length + "\r\n");
                     pw.print("Access-Control-Allow-Origin: *\r\n");
-                    pw.print("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n");
+                    pw.print("Access-Control-Allow-Methods: GET, POST, OPTIONS, PUT, DELETE, HEAD\r\n");
                     pw.print("Access-Control-Allow-Headers: *\r\n");
                     pw.print("Cache-Control: no-cache\r\n");
                     pw.print("\r\n");
@@ -460,6 +477,12 @@ public class WebViewEmbed {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 return false;
+            }
+
+            @Override
+            public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
+                // Bypass SSL errors so mods can load any HTTPS content
+                handler.proceed();
             }
 
             @Override
@@ -818,6 +841,68 @@ public class WebViewEmbed {
             localServer.shutdown();
             localServer = null;
         }
+    }
+
+    /**
+     * Capture WebView content as PNG bytes — faster than raw ARGB + encode_png.
+     * Uses CountDownLatch for proper synchronization.
+     */
+    public byte[] captureAsPng(int id) {
+        WebViewInstance wvi = webViews.get(id);
+        if (wvi == null || !wvi.isTextureMode || wvi.textureBitmap == null) {
+            return null;
+        }
+
+        CountDownLatch latch = new CountDownLatch(1);
+        mainHandler.post(() -> {
+            try {
+                if (wvi.webView != null && wvi.textureBitmap != null) {
+                    Canvas canvas = new Canvas(wvi.textureBitmap);
+                    wvi.webView.draw(canvas);
+                    wvi.textureNeedsUpdate = false;
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "PNG capture draw failed", e);
+            } finally {
+                latch.countDown();
+            }
+        });
+
+        try {
+            latch.await(150, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ignored) {}
+
+        Bitmap bmp = wvi.textureBitmap;
+        if (bmp == null) return null;
+
+        try {
+            ByteArrayOutputStream bos = new ByteArrayOutputStream(bmp.getWidth() * bmp.getHeight());
+            bmp.compress(Bitmap.CompressFormat.PNG, 100, bos);
+            return bos.toByteArray();
+        } catch (Exception e) {
+            Log.e(TAG, "PNG compress failed", e);
+            return null;
+        }
+    }
+
+    /**
+     * Set the background color of a WebView (supports transparency).
+     */
+    public void setBackgroundColor(int id, int r, int g, int b, int a) {
+        WebViewInstance wvi = webViews.get(id);
+        if (wvi == null) return;
+        final int color = Color.argb(a, r, g, b);
+        mainHandler.post(() -> {
+            if (wvi.webView != null) {
+                wvi.webView.setBackgroundColor(color);
+                if (a == 0) {
+                    // Fully transparent — keep software layer for capture to still work
+                    if (!wvi.isTextureMode) {
+                        wvi.webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
+                    }
+                }
+            }
+        });
     }
 
     /**

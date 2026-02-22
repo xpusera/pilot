@@ -35,7 +35,6 @@
 #include "lua_api/l_ipc.h"
 #ifdef __ANDROID__
 #include "lua_api/l_webview.h"
-#include "lua_api/l_termux.h"
 #endif
 
 extern "C" {
@@ -163,7 +162,6 @@ void ServerScripting::InitializeModApi(lua_State *L, int top)
 	ModApiIPC::Initialize(L, top);
 #ifdef __ANDROID__
 	ModApiWebView::Initialize(L, top);
-	ModApiTermux::Initialize(L, top);
 #endif
 }
 

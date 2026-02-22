@@ -23,7 +23,6 @@
 #include "lua_api/l_settings.h"
 #include "lua_api/l_client_sound.h"
 #include "lua_api/l_webview.h"
-#include "lua_api/l_termux.h"
 
 ClientScripting::ClientScripting(Client *client):
 	ScriptApiBase(ScriptingType::Client)
@@ -75,7 +74,6 @@ void ClientScripting::InitializeModApi(lua_State *L, int top)
 	ModApiParticlesLocal::Initialize(L, top);
 	ModApiClientSound::Initialize(L, top);
 	ModApiWebView::Initialize(L, top);
-	ModApiTermux::Initialize(L, top);
 }
 
 void ClientScripting::on_client_ready(LocalPlayer *localplayer)

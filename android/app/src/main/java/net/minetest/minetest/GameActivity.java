@@ -66,7 +66,6 @@ import android.widget.FrameLayout;
 @SuppressWarnings("unused")
 public class GameActivity extends SDLActivity {
 	private WebViewEmbed webViewEmbed;
-	private TermuxBridge termuxBridge;
 	private FrameLayout webViewContainer;
 
 	@Override
@@ -120,9 +119,6 @@ public class GameActivity extends SDLActivity {
 		// requestPermissions() when a WebView asks for mic/camera access.
 		webViewEmbed.setActivity(this);
 
-		termuxBridge = TermuxBridge.getInstance(this);
-		termuxBridge.initialize();
-
 		// Always check and request missing permissions at game start.
 		// The dialog only appears when permissions are actually missing,
 		// so repeated calls are harmless when everything is already granted.
@@ -166,11 +162,7 @@ public class GameActivity extends SDLActivity {
 		if (!needed.isEmpty()) {
 			showPermissionRationaleDialog(needed);
 		}
-		// Show Termux guidance if installed
-		if (termuxBridge != null && termuxBridge.isTermuxInstalled()) {
-			new Handler(Looper.getMainLooper()).postDelayed(
-				() -> showTermuxPermissionGuidance(), 3500);
-		}
+
 	}
 
 	private void showPermissionRationaleDialog(List<String> permissions) {
@@ -205,21 +197,7 @@ public class GameActivity extends SDLActivity {
 		}
 	}
 
-	public void showTermuxPermissionGuidance() {
-		new AlertDialog.Builder(this)
-			.setTitle("Termux Integration")
-			.setMessage("Termux is installed! To allow mods to execute shell commands, " +
-				"open Termux and run:\n\n  termux-setup-storage\n\n" +
-				"Then in Termux \u2192 Settings, enable \"Allow External Apps\".")
-			.setPositiveButton("Open Termux", (d, w) -> {
-				try {
-					Intent i = getPackageManager().getLaunchIntentForPackage("com.termux");
-					if (i != null) startActivity(i);
-				} catch (Exception ignored) {}
-			})
-			.setNegativeButton("Later", null)
-			.show();
-	}
+
 
 	@Override
 	public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
@@ -427,9 +405,6 @@ public class GameActivity extends SDLActivity {
 		if (webViewEmbed != null) {
 			webViewEmbed.destroyAll();
 		}
-		if (termuxBridge != null) {
-			termuxBridge.shutdown();
-		}
 		super.onDestroy();
 	}
 
@@ -502,6 +477,15 @@ public class GameActivity extends SDLActivity {
 		return webViewEmbed.captureTexture(id);
 	}
 
+	public byte[] webViewCaptureAsPng(int id) {
+		if (webViewEmbed == null) return null;
+		return webViewEmbed.captureAsPng(id);
+	}
+
+	public void webViewSetBackgroundColor(int id, int r, int g, int b, int a) {
+		if (webViewEmbed != null) webViewEmbed.setBackgroundColor(id, r, g, b, a);
+	}
+
 	public boolean webViewNeedsTextureUpdate(int id) {
 		if (webViewEmbed == null) return false;
 		return webViewEmbed.needsTextureUpdate(id);
@@ -532,123 +516,6 @@ public class GameActivity extends SDLActivity {
 	public int webViewGetTextureHeight(int id) {
 		if (webViewEmbed == null) return 0;
 		return webViewEmbed.getTextureHeight(id);
-	}
-
-	public boolean isTermuxInstalled() {
-		if (termuxBridge == null) return false;
-		return termuxBridge.isTermuxInstalled();
-	}
-
-	public boolean isTermuxAccessible() {
-		if (termuxBridge == null) return false;
-		return termuxBridge.isTermuxAccessible();
-	}
-
-	public int termuxCheckPermission() {
-		if (termuxBridge == null) return 0;
-		return termuxBridge.checkPermissionStatus();
-	}
-
-	public void termuxRequestPermission() {
-		runOnUiThread(() -> showTermuxPermissionGuidance());
-	}
-
-	public String[] termuxGetResult(int commandId) {
-		if (termuxBridge == null) return null;
-		TermuxBridge.CommandResult r = termuxBridge.getResult(commandId);
-		if (r == null) return null;
-		return new String[]{
-			String.valueOf(r.commandId),
-			r.stdout,
-			r.stderr,
-			String.valueOf(r.exitCode),
-			r.error,
-			String.valueOf(r.completed)
-		};
-	}
-
-	public int termuxExecuteCommand(String executable, String[] args, String workDir, boolean background, String stdin) {
-		if (termuxBridge == null) return -1;
-		return termuxBridge.executeCommand(executable, args, workDir, background, stdin);
-	}
-
-	public int termuxExecuteShell(String command, boolean background) {
-		if (termuxBridge == null) return -1;
-		return termuxBridge.executeShellCommand(command, background);
-	}
-
-	public int termuxExecuteScript(String script, boolean background) {
-		if (termuxBridge == null) return -1;
-		return termuxBridge.executeScript(script, background);
-	}
-
-	public int termuxAddHook(String pattern, boolean isRegex) {
-		if (termuxBridge == null) return -1;
-		return termuxBridge.addOutputHook(pattern, isRegex);
-	}
-
-	public void termuxRemoveHook(int hookId) {
-		if (termuxBridge != null) termuxBridge.removeOutputHook(hookId);
-	}
-
-	public int termuxSendInput(String input) {
-		if (termuxBridge == null) return -1;
-		return termuxBridge.sendInputToTermux(input);
-	}
-
-	public boolean termuxHasResults() {
-		if (termuxBridge == null) return false;
-		return termuxBridge.hasResults();
-	}
-
-	public String[] termuxPopResult() {
-		if (termuxBridge == null) return null;
-		TermuxBridge.CommandResult result = termuxBridge.popResult();
-		if (result == null) return null;
-		return new String[]{
-			String.valueOf(result.commandId),
-			result.stdout,
-			result.stderr,
-			String.valueOf(result.exitCode),
-			result.error
-		};
-	}
-
-	public boolean termuxIsCommandCompleted(int commandId) {
-		if (termuxBridge == null) return false;
-		return termuxBridge.isCommandCompleted(commandId);
-	}
-
-	public boolean termuxHasTriggeredHooks() {
-		if (termuxBridge == null) return false;
-		return termuxBridge.hasTriggeredHooks();
-	}
-
-	public String[] termuxPopTriggeredHook() {
-		if (termuxBridge == null) return null;
-		TermuxBridge.OutputHook hook = termuxBridge.popTriggeredHook();
-		if (hook == null) return null;
-		return new String[]{
-			String.valueOf(hook.id),
-			hook.pattern,
-			hook.output,
-			String.valueOf(hook.sourceId)
-		};
-	}
-
-	public String termuxGetHomePath() {
-		if (termuxBridge == null) return "";
-		return termuxBridge.getTermuxHomePath();
-	}
-
-	public String termuxGetBinPath() {
-		if (termuxBridge == null) return "";
-		return termuxBridge.getTermuxBinPath();
-	}
-
-	public String termuxGetPrefixPath() {
-		if (termuxBridge == null) return "";
-		return termuxBridge.getTermuxPrefixPath();
 	}
 
 	// TODO: share code with UnzipService.createNotification

@@ -1,4 +1,4 @@
--- Luanti WebView and Termux Modding API
+-- Luanti WebView Modding API (Client-Side)
 -- SPDX-License-Identifier: LGPL-2.1-or-later
 -- Copyright (C) 2024 Luanti Contributors
 
@@ -7,13 +7,16 @@ core.webview = {}
 
 local webviews = {}
 
+-- Special size constant: pass this as width or height to use MATCH_PARENT (fullscreen on that axis)
+core.webview.SIZE_FULLSCREEN = -1
+
 function core.webview.create(def)
 	local x = def.x or 0
 	local y = def.y or 0
 	local width = def.width or 400
 	local height = def.height or 300
 	local texture_mode = def.texture_mode or false
-	
+
 	local id = core.webview_create(x, y, width, height, texture_mode)
 	if id and id > 0 then
 		webviews[id] = {
@@ -72,6 +75,11 @@ function core.webview.set_size(id, width, height)
 	return true
 end
 
+-- Convenience: set WebView to fill entire screen
+function core.webview.set_fullscreen(id)
+	return core.webview.set_size(id, -1, -1)
+end
+
 function core.webview.set_visible(id, visible)
 	if not webviews[id] then return false end
 	core.webview_set_visible(id, visible)
@@ -85,9 +93,38 @@ function core.webview.destroy(id)
 	return true
 end
 
+-- Alias for destroy
+function core.webview.close(id)
+	return core.webview.destroy(id)
+end
+
+-- Set WebView background color (r, g, b, a all 0-255). Use a=0 for transparent.
+function core.webview.set_background(id, r, g, b, a)
+	if not webviews[id] then return false end
+	a = a or 255
+	core.webview_set_background_color(id, r or 255, g or 255, b or 255, a)
+	return true
+end
+
+-- Raw ARGB capture (legacy)
 function core.webview.capture_texture(id)
 	if not webviews[id] then return nil end
 	return core.webview_capture_texture(id)
+end
+
+-- Capture as PNG bytes directly (faster than raw ARGB + encode_png)
+function core.webview.capture_png(id)
+	if not webviews[id] then return nil end
+	return core.webview_capture_png(id)
+end
+
+-- Capture PNG and return a "[png:base64...]" texture string ready for set_properties
+function core.webview.make_texture_string(id)
+	local png_data = core.webview.capture_png(id)
+	if not png_data or #png_data == 0 then return nil end
+	local b64 = core.encode_base64(png_data)
+	if not b64 or #b64 == 0 then return nil end
+	return "[png:" .. b64
 end
 
 function core.webview.needs_texture_update(id)
@@ -117,6 +154,39 @@ function core.webview.get_all_ids()
 	return core.webview_get_ids()
 end
 
+function core.webview.register_content(path, data, mime_type)
+	core.webview_register_content(path, data, mime_type)
+end
+
+function core.webview.register_html(path, html)
+	core.webview_register_html(path, html)
+end
+
+function core.webview.unregister_content(path)
+	core.webview_unregister_content(path)
+end
+
+-- Bind a texture-mode WebView to an entity (client-side use).
+-- Returns a binding handle with a :stop() method.
+function core.webview.bind_to_entity(wv_id, entity_obj, interval_secs)
+	interval_secs = interval_secs or 0.1
+	local running = true
+	local elapsed = 0
+	local step_func = function(dtime)
+		if not running then return end
+		elapsed = elapsed + dtime
+		if elapsed < interval_secs then return end
+		elapsed = 0
+		if not core.webview_needs_texture_update(wv_id) then return end
+		local tex = core.webview.make_texture_string(wv_id)
+		if tex and entity_obj and entity_obj:is_valid() then
+			entity_obj:set_properties({textures = {tex}})
+		end
+	end
+	core.register_globalstep(step_func)
+	return {stop = function() running = false end}
+end
+
 local function process_webview_messages()
 	while core.webview_has_messages() do
 		local msg = core.webview_pop_message()
@@ -125,8 +195,8 @@ local function process_webview_messages()
 			local callbacks = wv.callbacks[msg.event]
 			if callbacks then
 				for _, callback in ipairs(callbacks) do
-					local success, err = pcall(callback, msg.data, msg.webview_id)
-					if not success then
+					local ok, err = pcall(callback, msg.data, msg.webview_id)
+					if not ok then
 						core.log("error", "WebView callback error: " .. tostring(err))
 					end
 				end
@@ -134,8 +204,8 @@ local function process_webview_messages()
 			local all_callbacks = wv.callbacks["*"]
 			if all_callbacks then
 				for _, callback in ipairs(all_callbacks) do
-					local success, err = pcall(callback, msg.event, msg.data, msg.webview_id)
-					if not success then
+					local ok, err = pcall(callback, msg.event, msg.data, msg.webview_id)
+					if not ok then
 						core.log("error", "WebView callback error: " .. tostring(err))
 					end
 				end
@@ -148,110 +218,4 @@ core.register_globalstep(function(dtime)
 	process_webview_messages()
 end)
 
--- Termux API wrapper for shell command execution
-core.termux = {}
-
-local pending_commands = {}
-local output_hooks = {}
-
-function core.termux.is_available()
-	return core.termux_is_installed() and core.termux_is_accessible()
-end
-
-function core.termux.is_installed()
-	return core.termux_is_installed()
-end
-
-function core.termux.execute(def)
-	local executable = def.executable or def[1]
-	local args = def.args or {}
-	local workdir = def.workdir
-	local background = def.background
-	if background == nil then background = true end
-	local stdin = def.stdin
-	local callback = def.callback
-	
-	local cmd_id = core.termux_execute(executable, args, workdir, background, stdin)
-	if cmd_id and cmd_id > 0 and callback then
-		pending_commands[cmd_id] = callback
-	end
-	return cmd_id
-end
-
-function core.termux.execute_shell(command, background, callback)
-	if background == nil then background = true end
-	local cmd_id = core.termux_execute_shell(command, background)
-	if cmd_id and cmd_id > 0 and callback then
-		pending_commands[cmd_id] = callback
-	end
-	return cmd_id
-end
-
-function core.termux.execute_script(script, background, callback)
-	if background == nil then background = true end
-	local cmd_id = core.termux_execute_script(script, background)
-	if cmd_id and cmd_id > 0 and callback then
-		pending_commands[cmd_id] = callback
-	end
-	return cmd_id
-end
-
-function core.termux.add_output_hook(pattern, is_regex, callback)
-	local hook_id = core.termux_add_hook(pattern, is_regex or false)
-	if hook_id and hook_id > 0 and callback then
-		output_hooks[hook_id] = callback
-	end
-	return hook_id
-end
-
-function core.termux.remove_output_hook(hook_id)
-	output_hooks[hook_id] = nil
-	core.termux_remove_hook(hook_id)
-end
-
-function core.termux.send_input(input)
-	return core.termux_send_input(input)
-end
-
-function core.termux.is_completed(cmd_id)
-	return core.termux_is_completed(cmd_id)
-end
-
-function core.termux.get_paths()
-	return core.termux_get_paths()
-end
-
-local function process_termux_results()
-	while core.termux_has_results() do
-		local result = core.termux_pop_result()
-		if result then
-			local callback = pending_commands[result.command_id]
-			if callback then
-				local success, err = pcall(callback, result)
-				if not success then
-					core.log("error", "Termux callback error: " .. tostring(err))
-				end
-				pending_commands[result.command_id] = nil
-			end
-		end
-	end
-	
-	while core.termux_has_triggered_hooks() do
-		local hook = core.termux_pop_triggered_hook()
-		if hook then
-			local callback = output_hooks[hook.hook_id]
-			if callback then
-				local success, err = pcall(callback, hook)
-				if not success then
-					core.log("error", "Termux hook callback error: " .. tostring(err))
-				end
-			end
-		end
-	end
-end
-
-core.register_globalstep(function(dtime)
-	process_termux_results()
-end)
-
-core.log("info", "WebView and Termux modding APIs initialized")
+core.log("info", "WebView modding API initialized")

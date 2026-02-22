@@ -25,6 +25,8 @@ private:
 	static int l_webview_register_html(lua_State *L);
 	static int l_webview_unregister_content(lua_State *L);
 	static int l_webview_capture_texture(lua_State *L);
+	static int l_webview_capture_png(lua_State *L);
+	static int l_webview_set_background_color(lua_State *L);
 	static int l_webview_needs_texture_update(lua_State *L);
 	static int l_webview_has_messages(lua_State *L);
 	static int l_webview_pop_message(lua_State *L);
