@@ -54,9 +54,11 @@ import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 @Keep
@@ -83,8 +85,8 @@ public class WebViewEmbed {
     private int localServerPort = 0;
 
     // Runnables for debouncing position/size updates per webview
-    private final java.util.concurrent.ConcurrentHashMap<Integer, Runnable> pendingPositionUpdates = new java.util.concurrent.ConcurrentHashMap<>();
-    private final java.util.concurrent.ConcurrentHashMap<Integer, Runnable> pendingSizeUpdates = new java.util.concurrent.ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, Runnable> pendingPositionUpdates = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, Runnable> pendingSizeUpdates = new ConcurrentHashMap<>();
 
     public static class LuaMessage {
         public final int webViewId;
