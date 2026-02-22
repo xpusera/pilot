@@ -1,299 +1,329 @@
--- Voice Mimic Horror - Server Side
+-- Voice Mimic Horror - Server Mod (single file, no client mod needed)
 -- SPDX-License-Identifier: LGPL-2.1-or-later
--- A horror entity that stalks players and mimics their recorded voice.
+-- A horror entity that stalks players, records their voice via WebView,
+-- and plays it back at them in a distorted form.
 
-local CHANNEL = "voice_mimic_horror"
-local mod_channel = minetest.mod_channel_join(CHANNEL)
+if not core.webview_create then
+	minetest.log("warning", "[VoiceMimic] WebView API unavailable (not Android). Mod disabled.")
+	return
+end
 
--- Entity states
-local STATE_LURKING    = 1  -- Far away, barely visible, just watching
-local STATE_STALKING   = 2  -- Getting closer, moves when not watched
-local STATE_APPROACHING = 3 -- Very close, about to mimic
-local STATE_MIMICKING  = 4  -- Playing back voice, frozen in place
-local STATE_FLEEING    = 5  -- Player looked directly at it, teleporting away
+-- ── CONFIG ─────────────────────────────────────────────────────────────────
 
--- Distances (in nodes)
-local LURK_DIST_MIN   = 30
-local LURK_DIST_MAX   = 55
-local STALK_DIST_MIN  = 12
-local STALK_DIST_MAX  = 28
-local APPROACH_DIST   = 6
-local LOOK_FOV_COS    = 0.93   -- ~21 deg cone for "looking at entity"
+local RECORDER_PATH  = "/voice_mimic_recorder"
+local MAX_CLIPS      = 8
+local PLAYBACK_PITCH = 0.82
 
--- Timing (seconds)
-local LURK_DURATION_MIN  = 40
-local LURK_DURATION_MAX  = 80
-local STALK_DURATION_MIN = 20
-local STALK_DURATION_MAX = 45
-local MIMIC_DURATION     = 6
-local FLEE_DISTANCE      = 35  -- How far to teleport when seen
+local STATE_LURKING    = 1
+local STATE_STALKING   = 2
+local STATE_APPROACHING = 3
+local STATE_MIMICKING  = 4
+local STATE_FLEEING    = 5
 
--- Sound and visual
-local SHADOW_SPEED    = 1.8    -- Walk speed
-local APPROACH_SPEED  = 2.8
+local LURK_DIST_MIN  = 30
+local LURK_DIST_MAX  = 55
+local STALK_DIST_MIN = 12
+local STALK_DIST_MAX = 28
+local APPROACH_DIST  = 6
+local LOOK_FOV_COS   = 0.93
+local FLEE_DIST      = 35
+local SHADOW_SPEED   = 1.8
+local APPROACH_SPEED = 2.8
+local LURK_TIME_MIN  = 40
+local LURK_TIME_MAX  = 80
+local STALK_TIME_MIN = 20
+local STALK_TIME_MAX = 45
+local MIMIC_DURATION = 6
 
--- Utility: find a valid spawn position near player
+-- ── VOICE RECORDER WEBVIEW ─────────────────────────────────────────────────
+
+local recorder_id  = nil
+local voice_clips  = {}
+local mic_ready    = false
+local server_port  = 0
+local pending_play = false
+
+local RECORDER_HTML_PATH = minetest.get_modpath("voice_mimic_horror") ..
+	DIR_DELIM .. "recorder.html"
+
+local function load_recorder_html()
+	local f = io.open(RECORDER_HTML_PATH, "r")
+	if not f then
+		minetest.log("error", "[VoiceMimic] Cannot open recorder.html: " .. RECORDER_HTML_PATH)
+		return nil
+	end
+	local html = f:read("*all")
+	f:close()
+	return html
+end
+
+local function play_mimic_for(player, pitch)
+	if not mic_ready or not recorder_id or #voice_clips == 0 then
+		if not mic_ready then pending_play = true end
+		return
+	end
+	local clip = voice_clips[math.random(#voice_clips)]
+	local js = string.format("window.playClip(%q, %.2f);", clip, pitch or PLAYBACK_PITCH)
+	core.webview_execute_js(recorder_id, js)
+end
+
+local function init_recorder()
+	if core.webview_get_screen_info then
+		local info = core.webview_get_screen_info()
+		server_port = info and info.server_port or 0
+	end
+	if server_port == 0 then
+		minetest.log("error", "[VoiceMimic] Local HTTP server not available.")
+		return
+	end
+
+	local html = load_recorder_html()
+	if not html then return end
+
+	if core.webview_register_html then
+		core.webview_register_html(RECORDER_PATH, html)
+	else
+		minetest.log("error", "[VoiceMimic] webview_register_html missing.")
+		return
+	end
+
+	recorder_id = core.webview_create(0, 0, 1, 1, false)
+	if not recorder_id or recorder_id <= 0 then
+		minetest.log("error", "[VoiceMimic] Failed to create recorder WebView.")
+		return
+	end
+
+	core.webview_set_visible(recorder_id, false)
+	local url = "http://127.0.0.1:" .. server_port .. RECORDER_PATH
+	core.webview_load_url(recorder_id, url)
+	minetest.log("action", "[VoiceMimic] Recorder WebView loaded from " .. url)
+end
+
+-- ── MESSAGE POLLING ────────────────────────────────────────────────────────
+
+minetest.register_globalstep(function(dtime)
+	if not recorder_id then return end
+	while core.webview_has_messages() do
+		local msg = core.webview_pop_message()
+		if msg and msg.webview_id == recorder_id then
+			if msg.event == "ready" then
+				mic_ready = true
+				minetest.log("action", "[VoiceMimic] Microphone ready!")
+				if pending_play then
+					pending_play = false
+					minetest.after(0.3, function()
+						local players = minetest.get_connected_players()
+						if #players > 0 then
+							play_mimic_for(players[1])
+						end
+					end)
+				end
+			elseif msg.event == "voice_clip" then
+				table.insert(voice_clips, msg.data)
+				if #voice_clips > MAX_CLIPS then
+					table.remove(voice_clips, 1)
+				end
+				minetest.log("action", "[VoiceMimic] Clip saved (" ..
+					#voice_clips .. "/" .. MAX_CLIPS .. ")")
+			elseif msg.event == "played" then
+				minetest.log("action", "[VoiceMimic] Playback done.")
+			elseif msg.event == "play_error" then
+				minetest.log("warning", "[VoiceMimic] Playback error: " .. (msg.data or ""))
+			elseif msg.event == "error" then
+				minetest.log("error", "[VoiceMimic] Recorder error: " .. (msg.data or ""))
+			end
+		end
+	end
+end)
+
+-- ── UTILITY ────────────────────────────────────────────────────────────────
+
 local function find_spawn_pos(player_pos, min_dist, max_dist)
 	for _ = 1, 20 do
 		local angle = math.random() * math.pi * 2
-		local dist = min_dist + math.random() * (max_dist - min_dist)
+		local dist  = min_dist + math.random() * (max_dist - min_dist)
 		local x = player_pos.x + math.cos(angle) * dist
 		local z = player_pos.z + math.sin(angle) * dist
-		-- Try to find ground
 		local surface = minetest.find_node_near(
 			{x = x, y = player_pos.y + 5, z = z}, 10, {"group:solid"}, true)
 		if surface then
 			return {x = x, y = surface.y + 1.5, z = z}
 		end
-		-- Fallback: same Y as player
-		local node_above = minetest.get_node({x = x, y = player_pos.y, z = z})
-		if node_above.name == "air" then
+		local node = minetest.get_node({x = x, y = player_pos.y, z = z})
+		if node.name == "air" then
 			return {x = x, y = player_pos.y, z = z}
 		end
 	end
-	-- Last resort: directly behind player
 	local yaw = math.random() * math.pi * 2
 	return {
 		x = player_pos.x + math.cos(yaw) * max_dist,
 		y = player_pos.y,
-		z = player_pos.z + math.sin(yaw) * max_dist
+		z = player_pos.z + math.sin(yaw) * max_dist,
 	}
 end
 
--- Utility: is player looking at a position?
-local function player_is_looking_at(player, target_pos)
-	local player_pos = player:get_pos()
-	player_pos.y = player_pos.y + 1.6  -- eye height
-	local look_dir = player:get_look_dir()
-	local to_target = vector.subtract(target_pos, player_pos)
-	local dist = vector.length(to_target)
-	if dist < 0.5 then return true end
-	local to_norm = vector.divide(to_target, dist)
-	local dot = look_dir.x * to_norm.x + look_dir.y * to_norm.y + look_dir.z * to_norm.z
-	return dot > LOOK_FOV_COS
+local function player_looking_at(player, target_pos)
+	local eye = player:get_pos()
+	eye.y = eye.y + 1.6
+	local dir = player:get_look_dir()
+	local to  = vector.subtract(target_pos, eye)
+	local len = vector.length(to)
+	if len < 0.5 then return true end
+	to = vector.divide(to, len)
+	return (dir.x * to.x + dir.y * to.y + dir.z * to.z) > LOOK_FOV_COS
 end
 
--- Send a signal to the client mod via mod channel
-local function signal_client(player_name, signal, data)
-	mod_channel:send_all(signal .. "|" .. (player_name or "") .. "|" .. (data or ""))
-end
+-- ── ENTITY ─────────────────────────────────────────────────────────────────
 
 minetest.register_entity("voice_mimic_horror:shadow", {
 	initial_properties = {
-		physical        = true,
+		physical             = true,
 		collide_with_objects = false,
-		visual          = "upright_sprite",
-		visual_size     = {x = 0.9, y = 2.1},
-		textures        = {"voice_mimic_shadow.png"},
-		collisionbox    = {-0.35, -0.01, -0.35, 0.35, 1.9, 0.35},
-		is_visible      = true,
+		visual               = "upright_sprite",
+		visual_size          = {x = 0.9, y = 2.1},
+		textures             = {"voice_mimic_shadow.png"},
+		collisionbox         = {-0.35, -0.01, -0.35, 0.35, 1.9, 0.35},
+		is_visible           = true,
 		makes_footstep_sound = false,
-		static_save     = false,
-		hp_max          = 1,
-		damage_per_second = 0,
+		static_save          = false,
+		hp_max               = 1,
 	},
 
-	-- Per-entity state
-	_state          = STATE_LURKING,
-	_state_timer    = 0,
-	_state_deadline = 0,
-	_target_player  = nil,
-	_last_seen_pos  = nil,
-	_mimic_count    = 0,
-	_flicker_timer  = 0,
-	_stalk_timer    = 0,
+	_state         = STATE_LURKING,
+	_state_timer   = 0,
+	_deadline      = 0,
+	_target        = nil,
+	_flicker_timer = 0,
+	_stare_timer   = 0,
+	_mimic_count   = 0,
 
 	on_activate = function(self, staticdata, dtime_s)
 		self.object:set_armor_groups({immortal = 1})
 		self.object:set_velocity({x = 0, y = 0, z = 0})
-		-- Pick lurk duration randomly
-		self._state_deadline = LURK_DURATION_MIN + math.random() *
-			(LURK_DURATION_MAX - LURK_DURATION_MIN)
-		self._flicker_timer = 0
+		self._deadline = LURK_TIME_MIN + math.random() * (LURK_TIME_MAX - LURK_TIME_MIN)
 	end,
 
 	on_step = function(self, dtime)
 		local pos = self.object:get_pos()
 		if not pos then return end
 
-		-- Find nearest player if no target
-		if not self._target_player or not self._target_player:is_player() then
+		-- Acquire target player
+		if not self._target or not self._target:is_player() then
 			local players = minetest.get_connected_players()
 			if #players == 0 then return end
-			self._target_player = players[math.random(#players)]
+			self._target = players[math.random(#players)]
 		end
-		local player = self._target_player
-		if not player:is_player() then
-			self._target_player = nil
-			return
-		end
+		local player = self._target
+		if not player:is_player() then self._target = nil; return end
 
-		local pname  = player:get_player_name()
-		local ppos   = player:get_pos()
-		local dist   = vector.distance(pos, ppos)
+		local ppos  = player:get_pos()
+		local dist  = vector.distance(pos, ppos)
 
-		self._state_timer    = (self._state_timer or 0) + dtime
-		self._flicker_timer  = (self._flicker_timer or 0) + dtime
-		self._stalk_timer    = (self._stalk_timer or 0) + dtime
+		self._state_timer  = (self._state_timer or 0) + dtime
+		self._flicker_timer = (self._flicker_timer or 0) + dtime
 
-		-- Flicker / breathing visual effect
+		-- Flicker effect every ~0.6–1.0s
 		if self._flicker_timer > 0.6 + math.random() * 0.4 then
 			self._flicker_timer = 0
-			-- Occasionally make entity slightly transparent or flicker
-			local visible = math.random() > 0.12  -- 12% chance to briefly vanish
-			self.object:set_properties({is_visible = visible})
+			self.object:set_properties({is_visible = math.random() > 0.10})
 		end
 
-		-- Face player always
-		local dir_to_player = vector.subtract(ppos, pos)
-		dir_to_player.y = 0
-		if vector.length(dir_to_player) > 0.1 then
-			local yaw = math.atan2(dir_to_player.x, dir_to_player.z)
-			self.object:set_yaw(yaw + math.pi)
+		-- Always face the player
+		local dp = vector.subtract(ppos, pos)
+		dp.y = 0
+		if vector.length(dp) > 0.1 then
+			self.object:set_yaw(math.atan2(dp.x, dp.z) + math.pi)
 		end
 
-		-- Check if player is looking directly at entity
-		local being_watched = player_is_looking_at(player, pos)
+		local watched = player_looking_at(player, pos)
 
-		-- ── STATE MACHINE ──────────────────────────────────────────────
+		-- ── STATE MACHINE ─────────────────────────────────────────────
+
 		if self._state == STATE_LURKING then
-			-- Stay far away, barely move, occasionally shift position
 			self.object:set_velocity({x = 0, y = 0, z = 0})
-			self.object:set_properties({is_visible = true})
-
-			if being_watched and dist < LURK_DIST_MAX then
-				-- Sway slightly but don't flee from this distance
-				local sway = {
-					x = math.sin(self._state_timer * 0.3) * 0.2,
-					y = 0,
-					z = math.cos(self._state_timer * 0.3) * 0.2
-				}
-				self.object:set_velocity(sway)
-			end
-
-			if self._state_timer >= self._state_deadline then
-				-- Transition to stalking
-				self._state = STATE_STALKING
+			if self._state_timer >= self._deadline then
+				self._state       = STATE_STALKING
 				self._state_timer = 0
-				self._state_deadline = STALK_DURATION_MIN + math.random() *
-					(STALK_DURATION_MAX - STALK_DURATION_MIN)
-				signal_client(pname, "entity_stalk", "start")
+				self._deadline    = STALK_TIME_MIN + math.random() * (STALK_TIME_MAX - STALK_TIME_MIN)
 			end
 
 		elseif self._state == STATE_STALKING then
-			-- Move toward player when not watched, freeze when watched
-			if being_watched then
+			if watched then
 				self.object:set_velocity({x = 0, y = 0, z = 0})
-				-- Stare back - extra creepy
-				-- If watched for >3 consecutive seconds → flee
-				self._stalk_timer = self._stalk_timer + dtime
-				if self._stalk_timer > 3.0 then
+				self._stare_timer = (self._stare_timer or 0) + dtime
+				if self._stare_timer > 3.0 then
 					self._state = STATE_FLEEING
 					self._state_timer = 0
-					return
+					self._stare_timer = 0
 				end
 			else
-				self._stalk_timer = 0
-				-- Move toward player to stalk distance
+				self._stare_timer = 0
 				if dist > STALK_DIST_MAX then
 					local dir = vector.normalize(vector.subtract(ppos, pos))
-					self.object:set_velocity({
-						x = dir.x * SHADOW_SPEED,
-						y = 0,
-						z = dir.z * SHADOW_SPEED
-					})
+					self.object:set_velocity({x = dir.x * SHADOW_SPEED, y = 0, z = dir.z * SHADOW_SPEED})
 				elseif dist < STALK_DIST_MIN then
-					-- Too close, back off
 					local dir = vector.normalize(vector.subtract(pos, ppos))
-					self.object:set_velocity({
-						x = dir.x * SHADOW_SPEED,
-						y = 0,
-						z = dir.z * SHADOW_SPEED
-					})
+					self.object:set_velocity({x = dir.x * SHADOW_SPEED, y = 0, z = dir.z * SHADOW_SPEED})
 				else
 					self.object:set_velocity({x = 0, y = 0, z = 0})
 				end
 			end
-
-			if self._state_timer >= self._state_deadline then
-				self._state = STATE_APPROACHING
+			if self._state_timer >= self._deadline then
+				self._state       = STATE_APPROACHING
 				self._state_timer = 0
-				self._stalk_timer = 0
+				self._stare_timer = 0
 			end
 
 		elseif self._state == STATE_APPROACHING then
-			-- Rush toward player, then mimic
-			if being_watched then
-				-- Flee immediately if caught approaching
+			if watched then
 				self._state = STATE_FLEEING
 				self._state_timer = 0
 				return
 			end
-
 			if dist > APPROACH_DIST + 1 then
 				local dir = vector.normalize(vector.subtract(ppos, pos))
-				self.object:set_velocity({
-					x = dir.x * APPROACH_SPEED,
-					y = 0,
-					z = dir.z * APPROACH_SPEED
-				})
+				self.object:set_velocity({x = dir.x * APPROACH_SPEED, y = 0, z = dir.z * APPROACH_SPEED})
 			else
-				-- Close enough → freeze and mimic
 				self.object:set_velocity({x = 0, y = 0, z = 0})
-				self._state = STATE_MIMICKING
+				self._state       = STATE_MIMICKING
 				self._state_timer = 0
 				self._mimic_count = (self._mimic_count or 0) + 1
-				signal_client(pname, "entity_mimic", tostring(self._mimic_count))
+				play_mimic_for(player, PLAYBACK_PITCH)
 			end
 
 		elseif self._state == STATE_MIMICKING then
-			-- Frozen in place while voice plays
 			self.object:set_velocity({x = 0, y = 0, z = 0})
-			-- Tilt head slightly (pitch oscillation)
+			-- Creepy head-tilt during playback
 			local tilt = math.sin(self._state_timer * 3.0) * 0.25
 			self.object:set_rotation({x = tilt, y = self.object:get_yaw(), z = 0})
-
 			if self._state_timer >= MIMIC_DURATION then
-				-- Done mimicking, flee
 				self._state = STATE_FLEEING
 				self._state_timer = 0
-				signal_client(pname, "entity_mimic_done", "")
+				self.object:set_rotation({x = 0, y = 0, z = 0})
 			end
 
 		elseif self._state == STATE_FLEEING then
-			-- Teleport to a new lurk position
 			self.object:set_velocity({x = 0, y = 0, z = 0})
 			local new_pos = find_spawn_pos(ppos, LURK_DIST_MIN, LURK_DIST_MAX)
-			if new_pos then
-				self.object:set_pos(new_pos)
-			end
-			self._state = STATE_LURKING
+			if new_pos then self.object:set_pos(new_pos) end
+			self._state       = STATE_LURKING
 			self._state_timer = 0
-			self._state_deadline = LURK_DURATION_MIN + math.random() *
-				(LURK_DURATION_MAX - LURK_DURATION_MIN)
-			self.object:set_rotation({x = 0, y = 0, z = 0})
+			self._deadline    = LURK_TIME_MIN + math.random() * (LURK_TIME_MAX - LURK_TIME_MIN)
 		end
 	end,
 
 	on_punch = function(self, puncher, time_from_last_punch, tool_capabilities, dir)
-		-- Cannot be killed, just flees
 		self._state = STATE_FLEEING
 		self._state_timer = 0
 	end,
 
 	on_death = function(self, killer)
-		-- Respawn nearby after a delay
 		local pos = self.object:get_pos()
 		minetest.after(5, function()
-			if pos then
-				local players = minetest.get_connected_players()
-				if #players > 0 then
-					local p = players[1]
-					local spawn = find_spawn_pos(p:get_pos(), LURK_DIST_MIN, LURK_DIST_MAX)
-					if spawn then
-						minetest.add_entity(spawn, "voice_mimic_horror:shadow")
-					end
-				end
+			local players = minetest.get_connected_players()
+			if #players > 0 then
+				local spawn = find_spawn_pos(players[1]:get_pos(), LURK_DIST_MIN, LURK_DIST_MAX)
+				if spawn then minetest.add_entity(spawn, "voice_mimic_horror:shadow") end
 			end
 		end)
 	end,
@@ -301,108 +331,107 @@ minetest.register_entity("voice_mimic_horror:shadow", {
 
 -- ── SPAWNER ────────────────────────────────────────────────────────────────
 
-local shadows_by_player = {}
-
-local function get_shadow_count()
-	local count = 0
-	for _, ref in pairs(minetest.luaentities) do
-		if ref.name == "voice_mimic_horror:shadow" then
-			count = count + 1
-		end
+local function count_shadows()
+	local n = 0
+	for _, e in pairs(minetest.luaentities) do
+		if e.name == "voice_mimic_horror:shadow" then n = n + 1 end
 	end
-	return count
+	return n
 end
 
-minetest.register_globalstep(function(dtime)
-	for _, player in ipairs(minetest.get_connected_players()) do
-		local pname = player:get_player_name()
-		if not shadows_by_player[pname] then
-			shadows_by_player[pname] = 0
+minetest.after(8, function spawn_check()
+	local players = minetest.get_connected_players()
+	if #players > 0 and count_shadows() < math.min(#players, 3) then
+		local p     = players[math.random(#players)]
+		local spawn = find_spawn_pos(p:get_pos(), LURK_DIST_MIN, LURK_DIST_MAX)
+		if spawn then
+			minetest.add_entity(spawn, "voice_mimic_horror:shadow")
+			minetest.log("action", "[VoiceMimic] Shadow spawned near " .. p:get_player_name())
 		end
 	end
-end)
-
--- Auto-spawn one shadow per connected player (up to 1 per player, max 3 total)
-minetest.after(8, function()
-	local function spawn_check()
-		local players = minetest.get_connected_players()
-		if #players == 0 then
-			minetest.after(15, spawn_check)
-			return
-		end
-		local total = get_shadow_count()
-		if total < math.min(#players, 3) then
-			local player = players[math.random(#players)]
-			local ppos   = player:get_pos()
-			local spawn  = find_spawn_pos(ppos, LURK_DIST_MIN, LURK_DIST_MAX)
-			if spawn then
-				minetest.add_entity(spawn, "voice_mimic_horror:shadow")
-				minetest.log("action", "[VoiceMimic] Spawned shadow near " ..
-					player:get_player_name())
-			end
-		end
-		minetest.after(30, spawn_check)
-	end
-	spawn_check()
+	minetest.after(30, spawn_check)
 end)
 
 -- ── CHAT COMMANDS ──────────────────────────────────────────────────────────
 
 minetest.register_chatcommand("shadow_spawn", {
-	description = "Spawn a Voice Mimic shadow near you",
-	privs = {},
+	description = "Spawn a shadow near you",
 	func = function(name, _)
-		local player = minetest.get_player_by_name(name)
-		if not player then return false, "Not found" end
-		local ppos  = player:get_pos()
-		local spawn = find_spawn_pos(ppos, LURK_DIST_MIN, LURK_DIST_MAX)
+		local p = minetest.get_player_by_name(name)
+		if not p then return false, "Player not found." end
+		local spawn = find_spawn_pos(p:get_pos(), LURK_DIST_MIN, LURK_DIST_MAX)
 		if spawn then
 			minetest.add_entity(spawn, "voice_mimic_horror:shadow")
 			return true, "Shadow spawned. It watches..."
 		end
-		return false, "No suitable spawn found."
-	end
+		return false, "No spawn position found."
+	end,
 })
 
 minetest.register_chatcommand("shadow_clear", {
-	description = "Remove all Voice Mimic shadows",
-	privs = {},
-	func = function(name, _)
-		local count = 0
-		for id, ref in pairs(minetest.luaentities) do
-			if ref.name == "voice_mimic_horror:shadow" then
-				ref.object:remove()
-				count = count + 1
+	description = "Remove all shadows",
+	func = function(_, _)
+		local n = 0
+		for _, e in pairs(minetest.luaentities) do
+			if e.name == "voice_mimic_horror:shadow" then
+				e.object:remove(); n = n + 1
 			end
 		end
-		return true, "Removed " .. count .. " shadow(s)."
-	end
+		return true, "Removed " .. n .. " shadow(s)."
+	end,
 })
 
 minetest.register_chatcommand("shadow_mimic", {
-	description = "Force the nearest shadow to mimic now",
-	privs = {},
+	description = "Force nearest shadow to approach and mimic now",
 	func = function(name, _)
-		local player = minetest.get_player_by_name(name)
-		if not player then return false, "Not found" end
-		local ppos = player:get_pos()
-		local nearest, nearest_dist = nil, math.huge
-		for _, ref in pairs(minetest.luaentities) do
-			if ref.name == "voice_mimic_horror:shadow" then
-				local d = vector.distance(ref.object:get_pos(), ppos)
-				if d < nearest_dist then
-					nearest_dist = d
-					nearest = ref
-				end
+		local p = minetest.get_player_by_name(name)
+		if not p then return false, "Player not found." end
+		local ppos = p:get_pos()
+		local best, best_d = nil, math.huge
+		for _, e in pairs(minetest.luaentities) do
+			if e.name == "voice_mimic_horror:shadow" then
+				local d = vector.distance(e.object:get_pos(), ppos)
+				if d < best_d then best_d = d; best = e end
 			end
 		end
-		if nearest then
-			nearest._state = STATE_APPROACHING
-			nearest._state_timer = 0
-			return true, "Shadow is approaching to mimic..."
+		if best then
+			best._state = STATE_APPROACHING
+			best._state_timer = 0
+			return true, "Shadow is approaching..."
 		end
-		return false, "No shadow found. Use /shadow_spawn first."
-	end
+		return false, "No shadow nearby. Use /shadow_spawn first."
+	end,
 })
+
+minetest.register_chatcommand("mimic_test", {
+	description = "Manually trigger voice playback",
+	func = function(name, _)
+		local p = minetest.get_player_by_name(name)
+		if #voice_clips == 0 then
+			return false, "No clips yet. Speak near your device first!"
+		end
+		play_mimic_for(p, PLAYBACK_PITCH)
+		return true, "Playing back your voice..."
+	end,
+})
+
+minetest.register_chatcommand("mimic_info", {
+	description = "Show voice mimic status",
+	func = function(_, _)
+		return true, string.format(
+			"VoiceMimic: mic=%s clips=%d/%d server_port=%d shadows=%d",
+			tostring(mic_ready), #voice_clips, MAX_CLIPS,
+			server_port, count_shadows())
+	end,
+})
+
+-- ── INIT ───────────────────────────────────────────────────────────────────
+
+minetest.after(2, function()
+	local ok, err = pcall(init_recorder)
+	if not ok then
+		minetest.log("error", "[VoiceMimic] Init failed: " .. tostring(err))
+	end
+end)
 
 minetest.log("action", "[VoiceMimic] Server mod loaded.")
